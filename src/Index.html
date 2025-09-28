@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <title>BOOTH 売上ダッシュボード</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body{font-family:system-ui,Arial,sans-serif;margin:16px;color:#222}
+    h1{font-size:18px;margin:0 0 8px}
+    h3{font-size:14px;margin:0}
+    .stats{display:flex;gap:12px;align-items:center;margin:8px 0 12px}
+    .badge{border:1px solid #ddd;border-radius:10px;padding:8px 12px;display:flex;gap:12px;align-items:baseline}
+    .badge-label{font-size:12px;color:#555}
+    .badge-value{font-size:18px;font-weight:600}
+    .tabs{display:flex;gap:8px;margin-bottom:12px}
+    .tab{padding:8px 12px;border:1px solid #999;border-radius:8px;cursor:pointer}
+    .tab.active{background:#f1f3f4}
+    .card{border:1px solid #ddd;border-radius:10px;padding:12px;margin-bottom:12px}
+    label{display:block;font-size:12px;color:#555;margin-top:8px}
+    input[type="text"],input[type="number"]{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .col{flex:1 1 280px}
+    .inline{display:inline-flex;gap:8px;align-items:center}
+    .right{margin-left:auto;display:inline-flex;gap:8px;align-items:center}
+    .muted{color:#666;font-size:12px}
+    button{padding:8px 12px;border:1px solid #777;border-radius:8px;background:#fff;cursor:pointer}
+    select{padding:6px;border:1px solid #bbb;border-radius:6px}
+    .divider{height:1px;background:#eee;margin:12px 0}
+    .chart{width:100%;height:360px}
+    .bar{height:320px}
+    #logs{margin-top:8px;height:220px;overflow:auto;background:#0b1020;color:#d7e1ff;border-radius:8px;padding:8px;
+          font-family:ui-monospace,Consolas,monaco,monospace;font-size:12px;white-space:pre-wrap;}
+    #setup-steps{white-space:pre-wrap;font-family:ui-monospace,Consolas,monaco,monospace;font-size:12px;background:#fafafa;border:1px dashed #ddd;border-radius:8px;padding:8px;margin-top:8px}
+  </style>
+  <script src="https://www.gstatic.com/charts/loader.js"></script>
+</head>
+<body>
+  <h1>BOOTH 売上ダッシュボード</h1>
+
+  <!-- 常時表示のメトリクス -->
+  <div class="stats">
+    <div class="badge">
+      <div class="badge-label">スキャン件数</div>
+      <div id="stat-scanned" class="badge-value">—</div>
+    </div>
+    <div class="badge">
+      <div class="badge-label">記載済み件数</div>
+      <div id="stat-collected" class="badge-value">—</div>
+    </div>
+    <button type="button" onclick="refreshStats()">メトリクス更新</button>
+  </div>
+
+  <div class="tabs">
+    <div id="tab-settings" class="tab active" onclick="showTab('settings')">設定</div>
+    <div id="tab-analytics" class="tab" onclick="showTab('analytics')">分析</div>
+  </div>
+
+  <!-- 設定ページ -->
+  <div id="page-settings">
+    <div class="card">
+      <div class="row">
+        <div class="col">
+          <label>SPREADSHEET_ID</label>
+          <input id="inp-sid" type="text" placeholder="xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" />
+        </div>
+        <div class="col">
+          <label>MAX_SCAN_COUNT</label>
+          <input id="inp-max" type="number" min="1" step="1" />
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="row">
+        <div class="col">
+          <button onclick="saveConfig()">保存</button>
+          <span id="save-status" class="muted"></span>
+        </div>
+        <div class="col inline">
+          <button id="btn-setup" onclick="runInitialSetup()">初期セットアップ</button>
+          <button onclick="runOnce()">今すぐ収集</button>
+          <span id="setup-status" class="muted"></span>
+        </div>
+        <div class="col inline">
+          <label class="inline">
+            <input id="toggle-trigger" type="checkbox" onchange="toggleTrigger(this.checked)">
+            定期抽出（5分）
+          </label>
+          <span id="trigger-status" class="muted"></span>
+        </div>
+      </div>
+
+      <div id="setup-steps" style="display:none"></div>
+
+      <div class="divider"></div>
+
+      <!-- 実行ログパネル -->
+      <div class="row">
+        <div class="col inline">
+          <h3>実行ログ</h3>
+        </div>
+        <div class="right">
+          <select id="sel-log-limit" onchange="refreshLogs()">
+            <option value="100">直近100件</option>
+            <option value="200" selected>直近200件</option>
+            <option value="500">直近500件</option>
+          </select>
+          <button onclick="refreshLogs()">更新</button>
+          <button onclick="clearLogs()">クリア</button>
+          <label class="inline" style="margin-left:8px">
+            <input id="auto-log" type="checkbox" onchange="toggleAutoLog(this.checked)">自動更新(10秒)
+          </label>
+        </div>
+      </div>
+      <div id="logs">(ログなし)</div>
+    </div>
+  </div>
+
+  <!-- 分析ページ -->
+  <div id="page-analytics" style="display:none">
+    <div class="card">
+      <div class="row">
+        <div class="col inline">
+          <label>集計単位</label>
+          <select id="sel-granularity" onchange="loadSeries()">
+            <option value="daily">日別</option>
+            <option value="weekly">週別</option>
+            <option value="monthly">月別</option>
+          </select>
+        </div>
+        <div class="col right muted">A:E = [日時, 注文番号, 商品名, 版, 金額]</div>
+      </div>
+      <div id="chart-counts" class="chart"></div>
+      <div id="chart-amounts" class="chart"></div>
+    </div>
+
+    <div class="card">
+      <div class="row">
+        <div class="col inline">
+          <label>時間帯別（2時間）</label>
+          <select id="sel-range" onchange="loadTimeOfDay()">
+            <option value="weekly">週トータル</option>
+            <option value="monthly">月トータル</option>
+            <option value="all">累計</option>
+          </select>
+        </div>
+        <div class="col inline">
+          <label>商品</label>
+          <select id="sel-product" onchange="loadTimeOfDay()">
+            <option value="">すべて</option>
+          </select>
+        </div>
+      </div>
+      <div id="chart-timeofday" class="bar"></div>
+    </div>
+  </div>
+
+<script>
+  google.charts.load('current', {'packages':['corechart']});
+
+  function showTab(name){
+    document.getElementById('tab-settings').classList.toggle('active', name==='settings');
+    document.getElementById('tab-analytics').classList.toggle('active', name==='analytics');
+    document.getElementById('page-settings').style.display = (name==='settings')?'block':'none';
+    document.getElementById('page-analytics').style.display = (name==='analytics')?'block':'none';
+    if (name==='analytics') { loadSeries(); loadTimeOfDay(); }
+  }
+
+  function enableSetupButton(spreadsheetId){
+    const on = !!(spreadsheetId && String(spreadsheetId).trim());
+    const btn = document.getElementById('btn-setup');
+    if (btn) btn.disabled = !on;
+  }
+
+  function refreshStats(){
+    const elScan = document.getElementById('stat-scanned');
+    const elCol  = document.getElementById('stat-collected');
+    google.script.run.withSuccessHandler(s=>{
+      if (!s){ elScan.textContent='—'; elCol.textContent='—'; return; }
+      elScan.textContent = (s.scannedThreads ?? 0).toLocaleString('ja-JP');
+      elCol.textContent  = (s.collectedRows ?? 0).toLocaleString('ja-JP');
+    }).withFailureHandler(_=>{
+      elScan.textContent='—'; elCol.textContent='—';
+    }).getDashboardStats();
+  }
+
+  function init() {
+    google.charts.setOnLoadCallback(()=>{});
+    google.script.run.withSuccessHandler(cfg=>{
+      document.getElementById('inp-sid').value = cfg.SPREADSHEET_ID||'';
+      document.getElementById('inp-max').value = cfg.MAX_SCAN_COUNT||200;
+      document.getElementById('toggle-trigger').checked = !!cfg.TRIGGER_ENABLED;
+      document.getElementById('trigger-status').textContent = cfg.TRIGGER_ENABLED?'オン':'オフ';
+      enableSetupButton(cfg.SPREADSHEET_ID);
+      refreshLogs();
+      refreshStats();
+    }).getConfigForUI();
+
+    document.getElementById('inp-sid').addEventListener('input', (e)=>{
+      enableSetupButton(e.target.value);
+    });
+
+    // 定期更新（60秒）
+    setInterval(refreshStats, 60000);
+  }
+
+  function saveConfig(){
+    const sid = document.getElementById('inp-sid').value.trim();
+    const max = Number(document.getElementById('inp-max').value);
+    const el = document.getElementById('save-status');
+    el.textContent='保存中';
+    google.script.run.withSuccessHandler(cfg=>{
+      el.textContent='保存完了';
+      document.getElementById('inp-sid').value = cfg.SPREADSHEET_ID;
+      document.getElementById('inp-max').value = cfg.MAX_SCAN_COUNT;
+      enableSetupButton(cfg.SPREADSHEET_ID);
+      refreshLogs();
+      refreshStats();
+    }).withFailureHandler(e=>{ el.textContent='エラー: '+e.message; })
+      .saveConfigFromUI({SPREADSHEET_ID:sid, MAX_SCAN_COUNT:max});
+  }
+
+  function runInitialSetup(){
+    const st = document.getElementById('setup-status');
+    const box = document.getElementById('setup-steps');
+    const sid = document.getElementById('inp-sid').value.trim();
+    const max = Number(document.getElementById('inp-max').value);
+
+    if (!sid) { st.textContent = 'エラー: SPREADSHEET_ID を入力して保存してください'; return; }
+
+    st.textContent='保存→セットアップ実行中';
+    box.style.display='block';
+    box.textContent='';
+
+    // 先に保存
+    google.script.run.withSuccessHandler(cfg=>{
+      document.getElementById('inp-sid').value = cfg.SPREADSHEET_ID || sid;
+      document.getElementById('inp-max').value = cfg.MAX_SCAN_COUNT || max;
+
+      google.script.run.withSuccessHandler(r=>{
+        const ok = r && r.ok;
+        const s = r && r.stats ? r.stats : {};
+        const col = (s.collectedRows ?? 0);
+        const scan = (s.scannedThreads ?? 0);
+        st.textContent = ok
+          ? `完了（トリガー:${r.trigger?'ON':'OFF'} / 収集済み件数:${col} / スキャン件数:${scan}）`
+          : '失敗';
+        box.textContent = (r && r.steps) ? r.steps.join('\n') : '(詳細なし)';
+        refreshLogs();
+        refreshStats();
+      }).withFailureHandler(e=>{
+        st.textContent='エラー: '+e.message;
+      }).runInitialSetupFromUI();
+
+    }).withFailureHandler(e=>{
+      st.textContent='エラー: '+e.message;
+    }).saveConfigFromUI({SPREADSHEET_ID:sid, MAX_SCAN_COUNT:max});
+  }
+
+  function runOnce(){
+    const el = document.getElementById('setup-status');
+    el.textContent='収集中…';
+    google.script.run.withSuccessHandler(r=>{
+      el.textContent = r && r.ok!==false
+        ? `完了: ${r.processed||0}件`
+        : `失敗: ${r && r.message ? r.message : 'unknown'}`;
+      refreshLogs();
+      refreshStats();
+    }).withFailureHandler(e=>{
+      el.textContent='エラー: '+e.message;
+    }).runCollectorOnceFromUI?.() || google.script.run.runCollectorOnceFromUI();
+  }
+
+  function toggleTrigger(on){
+    const el = document.getElementById('trigger-status');
+    el.textContent='更新中';
+    google.script.run.withSuccessHandler(state=>{
+      el.textContent = state?'オン':'オフ';
+      document.getElementById('toggle-trigger').checked = state;
+      refreshLogs();
+    }).withFailureHandler(e=>{
+      el.textContent='エラー: ' + e.message;
+      document.getElementById('toggle-trigger').checked = !on;
+    }).setTriggerEnabled(on);
+  }
+
+  // 折れ線（件数/金額）
+  function loadSeries(){
+    const gran = document.getElementById('sel-granularity').value;
+    google.script.run.withSuccessHandler(drawSeries).getSeriesByProduct(gran);
+  }
+  function drawSeries(payload){
+    if (!payload) return;
+    const cols = [{label:'期間', type:'string'}].concat(payload.products.map(p=>({label:p,type:'number'})));
+    const dt1 = new google.visualization.DataTable();
+    cols.forEach(c=>dt1.addColumn(c.type, c.label));
+    dt1.addRows(payload.counts);
+
+    const dt2 = new google.visualization.DataTable();
+    cols.forEach(c=>dt2.addColumn(c.type, c.label));
+    dt2.addRows(payload.amounts);
+
+    const opt = {legend:{position:'top'}, chartArea:{left:60,top:40,right:20,bottom:60}, height:360, pointSize:3};
+    new google.visualization.LineChart(document.getElementById('chart-counts'))
+      .draw(dt1, Object.assign({}, opt, {title:'商品別 売上件数（'+labelGran(payload.granularity)+'）'}));
+    new google.visualization.LineChart(document.getElementById('chart-amounts'))
+      .draw(dt2, Object.assign({}, opt, {title:'商品別 売上金額（'+labelGran(payload.granularity)+'）', vAxis:{format:'¥#,###'}}));
+  }
+  function labelGran(g){ return g==='weekly'?'週別':(g==='monthly'?'月別':'日別'); }
+
+  // 時間帯別（2時間）
+  function loadTimeOfDay(){
+    const r = document.getElementById('sel-range').value;
+    const p = document.getElementById('sel-product').value;
+    google.script.run.withSuccessHandler(drawTimeOfDay).getTimeOfDayByProduct(r, p);
+  }
+  function drawTimeOfDay(payload){
+    if (!payload) return;
+    const sel = document.getElementById('sel-product');
+    if (sel.options.length <= 1) {
+      payload.products.forEach(prod=>{
+        const o=document.createElement('option'); o.value=prod; o.textContent=prod; sel.appendChild(o);
+      });
+    }
+    const dt = new google.visualization.DataTable();
+    dt.addColumn('string','時間帯');
+    dt.addColumn('number','件数');
+    dt.addRows(payload.data);
+
+    const title = `時間帯別（2h）売上件数：${payload.product||'すべて'} / ${labelRange(payload.rangeType)}`;
+    const opt = {legend:'none', chartArea:{left:60,top:40,right:20,bottom:60}, height:320, hAxis:{slantedText:true, slantedTextAngle:45}};
+    new google.visualization.ColumnChart(document.getElementById('chart-timeofday')).draw(dt, Object.assign({}, opt, {title}));
+  }
+  function labelRange(r){ return r==='weekly'?'週トータル':(r==='monthly'?'月トータル':'累計'); }
+
+  // 実行ログ
+  let _logTimer = null;
+  function refreshLogs(){
+    const limit = Number(document.getElementById('sel-log-limit').value)||200;
+    const box = document.getElementById('logs');
+    box.textContent = '読み込み中…';
+    google.script.run.withSuccessHandler(rows=>{
+      const lines = rows.map(r=>`[${r.time}] ${String(r.level||'').padEnd(5)} ${r.message}${r.context?`  ${r.context}`:''}`);
+      box.textContent = lines.join('\n') || '(ログなし)';
+      box.scrollTop = box.scrollHeight;
+    }).withFailureHandler(e=>{
+      box.textContent = 'ログ取得エラー: ' + e.message;
+    }).getRecentLogs(limit);
+  }
+  function clearLogs(){
+    const box = document.getElementById('logs');
+    box.textContent = 'クリア中…';
+    google.script.run.withSuccessHandler(()=>{
+      box.textContent = '(ログなし)';
+    }).withFailureHandler(e=>{
+      box.textContent = 'クリア失敗: ' + e.message;
+    }).clearLogs();
+  }
+  function toggleAutoLog(on){
+    if (_logTimer) { clearInterval(_logTimer); _logTimer=null; }
+    if (on) _logTimer = setInterval(refreshLogs, 10000);
+  }
+
+  // 起動
+  init();
+</script>
+</body>
+</html>
