@@ -1,4 +1,4 @@
-# Booth-Email-Colloector BOOTH 売上自動収集 & 分析ダッシュボード
+# Booth-Email-Collector BOOTH 売上自動収集 & 分析ダッシュボード
 
 Google Apps Script を使って **BOOTH 売上通知メール**を自動収集し、  
 Google スプレッドシートに記録、さらにウェブ UI で可視化する仕組み。
