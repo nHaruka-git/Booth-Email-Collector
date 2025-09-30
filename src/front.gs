@@ -8,7 +8,8 @@ const CFG_KEYS = {
   SHEET_ID: 'SPREADSHEET_ID',
   MAX_SCAN: 'MAX_SCAN_COUNT',
   TRIGGER:  'TRIGGER_ENABLED',
-  SETUP:    'SETUP_DONE'
+  SETUP:    'SETUP_DONE',
+  FREQ:     'TRIGGER_FREQUENCY_MIN'
 };
 const LOG_SHEET_NAME = 'BOOTH_LOGS';
 
@@ -33,12 +34,15 @@ function doGet() {
 function getConfigForUI() {
   ensureConfigLoaded();
   const triggerOn = getTriggerStatus();
+  const freq = (typeof getTriggerFrequency_ === 'function') ? getTriggerFrequency_() : 5;
   return {
     SPREADSHEET_ID: CONFIG.SPREADSHEET_ID,
     MAX_SCAN_COUNT: CONFIG.MAX_SCAN_COUNT,
-    TRIGGER_ENABLED: triggerOn
+    TRIGGER_ENABLED: triggerOn,
+    TRIGGER_FREQUENCY_MIN: freq
   };
 }
+
 function saveConfigFromUI(cfg) {
   const sidIn = (typeof cfg?.SPREADSHEET_ID === 'string') ? cfg.SPREADSHEET_ID.trim() : '';
   const maxIn = cfg?.MAX_SCAN_COUNT;
@@ -66,6 +70,51 @@ function runInitialSetupFromUI() {
   return _setupCore_('ui'); // main.gs 側の実装を使用
 }
 
+function setTriggerConfigFromUI(payload) {
+  ensureConfigLoaded();
+  const sp = PropertiesService.getScriptProperties();
+  const setupDone = sp.getProperty(CFG_KEYS.SETUP) === '1';
+
+  const minutes = Number(payload && payload.minutes) || 5;
+  const enabled = !!(payload && payload.enabled);
+
+  sp.setProperty(CFG_KEYS.TRIGGER, enabled ? '1' : '0');
+  sp.setProperty(CFG_KEYS.FREQ, String(minutes));
+
+  // セットアップ前は実体OFF固定（要件）
+  const actualEnabled = setupDone ? _applyTrigger_(enabled, minutes) : false;
+
+  addLogFromServer && addLogFromServer('INFO','トリガー更新',
+    {desiredEnabled: enabled, minutes, applied: actualEnabled, setupDone});
+
+  return { enabled: actualEnabled, minutes };
+}
+
+function _applyTrigger_(enabled, minutes) {
+  // 既存削除
+  ScriptApp.getProjectTriggers().forEach(t=>{
+    if (t.getHandlerFunction && t.getHandlerFunction() === 'processBOOTHSalesEmails') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  if (!enabled) {
+    addLogFromServer && addLogFromServer('INFO','トリガー未作成',{reason:'disabled'});
+    return false;
+  }
+  let tb = ScriptApp.newTrigger('processBOOTHSalesEmails').timeBased();
+  if (minutes === 60) {
+    tb = tb.everyHours(1);
+  } else if ([1,5,10,15,30].includes(minutes)) {
+    tb = tb.everyMinutes(minutes);
+  } else {
+    minutes = 5; // フォールバック
+    tb = tb.everyMinutes(5);
+  }
+  tb.create();
+  addLogFromServer && addLogFromServer('INFO','トリガー作成/更新',{minutesApplied: minutes});
+  return _isTriggerOn_();
+}
+
 /* ---- ダッシュボード統計 ---- */
 function getDashboardStats() {
   try {
@@ -73,7 +122,7 @@ function getDashboardStats() {
     const id = CONFIG.SPREADSHEET_ID;
     const stats = { collectedRows: 0, scannedThreads: 0, setupDone: getSetupDone() };
 
-    // 記載済み件数（シートのデータ行数）
+    // 記載済み件数
     if (id && id !== 'YOUR_SPREADSHEET_ID_HERE') {
       try {
         const sh = SpreadsheetApp.openById(id).getSheetByName(CONFIG.SHEET_NAME);
@@ -81,11 +130,18 @@ function getDashboardStats() {
       } catch(e) { /* ignore */ }
     }
 
-    // スキャン件数（BOOTH該当メール総ヒット）
+    // スキャン件数（ページングで全件カウント）
     try {
-      stats.scannedThreads = GmailApp.search(
-        'from:noreply@booth.pm (subject:商品が購入されました OR subject:ご注文が確定しました)'
-      ).length;
+      const query = 'from:noreply@booth.pm (subject:商品が購入されました OR subject:ご注文が確定しました)';
+      let total = 0;
+      const pageSize = 500;
+      for (let start = 0; ; start += pageSize) {
+        const batch = GmailApp.search(query, start, pageSize);
+        if (!batch.length) break;
+        total += batch.length;
+        if (batch.length < pageSize) break;
+      }
+      stats.scannedThreads = total;
     } catch(e) { /* ignore */ }
 
     return stats;
@@ -184,19 +240,58 @@ function _readRows_() {
   })).filter(x=>x.product && x.amount>=0 && x.date instanceof Date && !isNaN(x.date));
 }
 function _startOfDay(d){ const x=new Date(d); x.setHours(0,0,0,0); return x; }
-function _startOfWeek(d){ const x=_startOfDay(d); const dow=(x.getDay()+6)%7; x.setDate(x.getDate()-dow); return x; }
+function _startOfWeek(d){ const x=_startOfDay(d); const dow=(x.getDay()+6)%7; x.setDate(x.getDate()-dow); return x; } // ISO的（月曜始まり）
 function _startOfMonth(d){ const x=new Date(d.getFullYear(), d.getMonth(), 1); x.setHours(0,0,0,0); return x; }
 function _formatDate(d){ return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM-dd'); }
 function _formatWeek(d){ return Utilities.formatDate(d, Session.getScriptTimeZone(), 'YYYY-ww'); }
 function _formatMonth(d){ return Utilities.formatDate(d, Session.getScriptTimeZone(), 'yyyy-MM'); }
+/** 週ラベル: 年-月-週（週番号は年内週） */
+function _formatWeekYMW(d){
+  const tz = Session.getScriptTimeZone();
+  const y = Utilities.formatDate(d, tz, 'yyyy');
+  const m = Utilities.formatDate(d, tz, 'MM');
+  const w = Utilities.formatDate(d, tz, 'ww'); // 年内週番号
+  return `${y}-${m}-${w}`;
+}
 
-function getSeriesByProduct(granularity) {
+/** 商品別 件数/金額 折れ線
+ * granularity: 'daily' | 'weekly' | 'monthly'
+ * lookback: daily=7|30, weekly=4|12, monthly=未使用
+ */
+function getSeriesByProduct(granularity, lookback) {
   const rows = _readRows_();
-  const byKey = new Map();
-  const labeller = (granularity==='weekly') ? _startOfWeek : (granularity==='monthly'? _startOfMonth : _startOfDay);
-  const fmt = (granularity==='weekly') ? _formatWeek : (granularity==='monthly'? _formatMonth : _formatDate);
 
+  // 下限日
+  const now = new Date();
+  let from = new Date(2000,0,1);
+  if (granularity === 'daily') {
+    const days = Number(lookback) || 30;
+    const today0 = _startOfDay(now);
+    from = new Date(today0);
+    from.setDate(from.getDate() - (days - 1));
+  } else if (granularity === 'weekly') {
+    const w = Number(lookback) || 12;
+    const thisWeek = _startOfWeek(now);
+    from = new Date(thisWeek);
+    from.setDate(from.getDate() - 7 * (w - 1));
+  } else if (granularity === 'monthly') {
+    const m = Number(lookback) || 12;
+    const thisMonth = _startOfMonth(now);
+    from = new Date(thisMonth);
+    from.setMonth(from.getMonth() - (m - 1)); // 直近mカ月（今月含む）
+  }
+
+  const labeller =
+    (granularity === 'weekly')  ? _startOfWeek :
+    (granularity === 'monthly') ? _startOfMonth : _startOfDay;
+
+  const fmt =
+    (granularity === 'weekly')  ? _formatWeekYMW :
+    (granularity === 'monthly') ? _formatMonth : _formatDate;
+
+  const byKey = new Map();
   rows.forEach(r=>{
+    if (r.date < from) return;
     const bucket = labeller(r.date);
     const key = bucket.getTime();
     if (!byKey.has(key)) byKey.set(key, new Map());
@@ -227,26 +322,29 @@ function getSeriesByProduct(granularity) {
     countRows.push(cntRow);
     amountRows.push(amtRow);
   }
-  return { products: productList, counts: countRows, amounts: amountRows, granularity };
+  return { products: productList, counts: countRows, amounts: amountRows, granularity, lookback: lookback || null };
 }
 
+/** 商品ごと時間帯別（1時間）件数: 週/月/累計 */
 function getTimeOfDayByProduct(rangeType, product) {
-  const rows = _readRows_().filter(r=>!product || r.product===product);
+  const all = _readRows_();
+  const rows = all.filter(r=>!product || r.product === product);
   const now = new Date();
-  const from = (rangeType==='weekly') ? new Date(now.getFullYear(), now.getMonth(), now.getDate()-6)
-             : (rangeType==='monthly')? new Date(now.getFullYear(), now.getMonth(), 1)
-             : new Date(2000,0,1);
-  const buckets = Array.from({length:12}, ()=>0);
+  const from =
+    (rangeType === 'weekly')  ? new Date(now.getFullYear(), now.getMonth(), now.getDate()-6) :
+    (rangeType === 'monthly') ? new Date(now.getFullYear(), now.getMonth(), 1) :
+                                new Date(2000,0,1);
+
+  const buckets = Array.from({length:24}, ()=>0); // 0..23 時
 
   rows.forEach(r=>{
     if (r.date < from) return;
     const h = r.date.getHours();
-    const idx = Math.floor(h/2);
-    buckets[idx] += 1;
+    buckets[h] += 1;
   });
 
-  const labels = Array.from({length:12},(_,i)=>`${String(i*2).padStart(2,'0')}:00`);
+  const labels = Array.from({length:24},(_,i)=>`${String(i).padStart(2,'0')}:00`);
   const data = labels.map((lab,i)=>[lab, buckets[i]]);
-  const products = [...new Set(_readRows_().map(r=>r.product))];
+  const products = [...new Set(all.map(r=>r.product))];
   return { product, rangeType, data, labels, products };
 }
