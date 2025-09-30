@@ -8,14 +8,14 @@
     body{font-family:system-ui,Arial,sans-serif;margin:16px;color:#222}
     h1{font-size:18px;margin:0 0 8px}
     h3{font-size:14px;margin:0}
-    .stats{display:flex;gap:12px;align-items:center;margin:8px 0 12px}
-    .badge{border:1px solid #ddd;border-radius:10px;padding:8px 12px;display:flex;gap:12px;align-items:baseline}
+    .stats{display:flex;gap:12px;align-items:center;margin:8px 0 12px;flex-wrap:wrap}
+    .badge{border:1px solid #ddd;border-radius:10px;padding:8px 12px;display:flex;gap:12px;align-items:baseline;background:#fff}
     .badge-label{font-size:12px;color:#555}
     .badge-value{font-size:18px;font-weight:600}
     .tabs{display:flex;gap:8px;margin-bottom:12px}
-    .tab{padding:8px 12px;border:1px solid #999;border-radius:8px;cursor:pointer}
+    .tab{padding:8px 12px;border:1px solid #999;border-radius:8px;cursor:pointer;background:#fff}
     .tab.active{background:#f1f3f4}
-    .card{border:1px solid #ddd;border-radius:10px;padding:12px;margin-bottom:12px}
+    .card{border:1px solid #ddd;border-radius:10px;padding:12px;margin-bottom:12px;background:#fff}
     label{display:block;font-size:12px;color:#555;margin-top:8px}
     input[type="text"],input[type="number"]{width:100%;padding:8px;border:1px solid #bbb;border-radius:6px}
     .row{display:flex;gap:12px;flex-wrap:wrap}
@@ -30,14 +30,14 @@
     .bar{height:320px}
     #logs{margin-top:8px;height:220px;overflow:auto;background:#0b1020;color:#d7e1ff;border-radius:8px;padding:8px;
           font-family:ui-monospace,Consolas,monaco,monospace;font-size:12px;white-space:pre-wrap;}
-    #setup-steps{white-space:pre-wrap;font-family:ui-monospace,Consolas,monaco,monospace;font-size:12px;background:#fafafa;border:1px dashed #ddd;border-radius:8px;padding:8px;margin-top:8px}
+    #setup-steps{white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace;font-size:12px;background:#fafafa;border:1px dashed #ddd;border-radius:8px;padding:8px;margin-top:8px}
   </style>
   <script src="https://www.gstatic.com/charts/loader.js"></script>
 </head>
 <body>
   <h1>BOOTH 売上ダッシュボード</h1>
 
-  <!-- 常時表示のメトリクス -->
+  <!-- 常時表示メトリクス -->
   <div class="stats">
     <div class="badge">
       <div class="badge-label">スキャン件数</div>
@@ -47,7 +47,7 @@
       <div class="badge-label">記載済み件数</div>
       <div id="stat-collected" class="badge-value">—</div>
     </div>
-    <button type="button" onclick="refreshStats()">メトリクス更新</button>
+    <button type="button" onclick="refreshStats()">件数更新</button>
   </div>
 
   <div class="tabs">
@@ -83,9 +83,15 @@
         </div>
         <div class="col inline">
           <label class="inline">
-            <input id="toggle-trigger" type="checkbox" onchange="toggleTrigger(this.checked)">
-            定期抽出（5分）
+            <input id="toggle-trigger" type="checkbox" onchange="onTriggerToggle()">
+            自動抽出
           </label>
+          <select id="sel-trigger-freq" onchange="onTriggerFreqChange()">
+            <option value="5">5分</option>
+            <option value="10">10分</option>
+            <option value="30">30分</option>
+            <option value="60">60分</option>
+          </select>
           <span id="trigger-status" class="muted"></span>
         </div>
       </div>
@@ -122,10 +128,14 @@
       <div class="row">
         <div class="col inline">
           <label>集計単位</label>
-          <select id="sel-granularity" onchange="loadSeries()">
-            <option value="daily">日別</option>
+          <select id="sel-granularity" onchange="onGranChange()">
+            <option value="daily" selected>日別</option>
             <option value="weekly">週別</option>
             <option value="monthly">月別</option>
+          </select>
+          <label style="margin-left:8px">表示範囲</label>
+          <select id="sel-lookback" onchange="loadSeries()">
+            <!-- オプションは集計単位に応じて動的に差し替え -->
           </select>
         </div>
         <div class="col right muted">A:E = [日時, 注文番号, 商品名, 版, 金額]</div>
@@ -137,7 +147,7 @@
     <div class="card">
       <div class="row">
         <div class="col inline">
-          <label>時間帯別（2時間）</label>
+          <label>時間帯別（1時間ごと）</label>
           <select id="sel-range" onchange="loadTimeOfDay()">
             <option value="weekly">週トータル</option>
             <option value="monthly">月トータル</option>
@@ -158,6 +168,7 @@
 <script>
   google.charts.load('current', {'packages':['corechart']});
 
+  /* ---------- 共通UI ---------- */
   function showTab(name){
     document.getElementById('tab-settings').classList.toggle('active', name==='settings');
     document.getElementById('tab-analytics').classList.toggle('active', name==='analytics');
@@ -165,13 +176,13 @@
     document.getElementById('page-analytics').style.display = (name==='analytics')?'block':'none';
     if (name==='analytics') { loadSeries(); loadTimeOfDay(); }
   }
-
   function enableSetupButton(spreadsheetId){
     const on = !!(spreadsheetId && String(spreadsheetId).trim());
     const btn = document.getElementById('btn-setup');
     if (btn) btn.disabled = !on;
   }
 
+  /* ---------- メトリクス ---------- */
   function refreshStats(){
     const elScan = document.getElementById('stat-scanned');
     const elCol  = document.getElementById('stat-collected');
@@ -184,14 +195,18 @@
     }).getDashboardStats();
   }
 
+  /* ---------- 初期化 ---------- */
   function init() {
     google.charts.setOnLoadCallback(()=>{});
     google.script.run.withSuccessHandler(cfg=>{
       document.getElementById('inp-sid').value = cfg.SPREADSHEET_ID||'';
       document.getElementById('inp-max').value = cfg.MAX_SCAN_COUNT||200;
       document.getElementById('toggle-trigger').checked = !!cfg.TRIGGER_ENABLED;
-      document.getElementById('trigger-status').textContent = cfg.TRIGGER_ENABLED?'オン':'オフ';
+      document.getElementById('sel-trigger-freq').value = String(cfg.TRIGGER_FREQUENCY_MIN || 5);
+      document.getElementById('trigger-status').textContent =
+        (cfg.TRIGGER_ENABLED?'オン':'オフ') + ` / ${cfg.TRIGGER_FREQUENCY_MIN||5}分`;
       enableSetupButton(cfg.SPREADSHEET_ID);
+      onGranChange(); // lookback 初期化
       refreshLogs();
       refreshStats();
     }).getConfigForUI();
@@ -204,6 +219,7 @@
     setInterval(refreshStats, 60000);
   }
 
+  /* ---------- 設定保存 / セットアップ / 収集 ---------- */
   function saveConfig(){
     const sid = document.getElementById('inp-sid').value.trim();
     const max = Number(document.getElementById('inp-max').value);
@@ -268,30 +284,67 @@
       refreshStats();
     }).withFailureHandler(e=>{
       el.textContent='エラー: '+e.message;
-    }).runCollectorOnceFromUI?.() || google.script.run.runCollectorOnceFromUI();
+    }).runCollectorOnceFromUI();
   }
 
-  function toggleTrigger(on){
+  /* ---------- トリガー（ON/OFF & 頻度） ---------- */
+  function applyTriggerUI(state){
+    document.getElementById('toggle-trigger').checked = !!state.enabled;
+    document.getElementById('sel-trigger-freq').value = String(state.minutes);
+    document.getElementById('trigger-status').textContent =
+      (state.enabled?'オン':'オフ') + ` / ${state.minutes}分`;
+  }
+  function setTriggerConfig(enabled, minutes){
     const el = document.getElementById('trigger-status');
-    el.textContent='更新中';
-    google.script.run.withSuccessHandler(state=>{
-      el.textContent = state?'オン':'オフ';
-      document.getElementById('toggle-trigger').checked = state;
+    el.textContent = '更新中';
+    google.script.run.withSuccessHandler(res=>{
+      const minutesApplied = (res && res.minutes) ? res.minutes : minutes;
+      const enabledApplied = !!(res && res.enabled);
+      applyTriggerUI({enabled:enabledApplied, minutes:minutesApplied});
       refreshLogs();
     }).withFailureHandler(e=>{
-      el.textContent='エラー: ' + e.message;
-      document.getElementById('toggle-trigger').checked = !on;
-    }).setTriggerEnabled(on);
+      el.textContent = 'エラー: ' + e.message;
+    }).setTriggerConfigFromUI({enabled, minutes});
+  }
+  function onTriggerToggle(){
+    const enabled = document.getElementById('toggle-trigger').checked;
+    const minutes = Number(document.getElementById('sel-trigger-freq').value);
+    setTriggerConfig(enabled, minutes);
+  }
+  function onTriggerFreqChange(){
+    const enabled = document.getElementById('toggle-trigger').checked;
+    const minutes = Number(document.getElementById('sel-trigger-freq').value);
+    setTriggerConfig(enabled, minutes);
   }
 
-  // 折れ線（件数/金額）
+  /* ---------- 折れ線（件数/金額） ---------- */
+  function onGranChange(){
+    const gran = document.getElementById('sel-granularity').value;
+    const lb = document.getElementById('sel-lookback');
+    lb.innerHTML = '';
+    if (gran === 'daily') {
+      [['7','直近7日'],['30','直近30日']].forEach(([v,t])=>{ const o=document.createElement('option'); o.value=v;o.textContent=t; lb.appendChild(o); });
+      lb.value='30';
+    } else if (gran === 'weekly') {
+      [['4','直近4週間'],['12','直近12週間']].forEach(([v,t])=>{ const o=document.createElement('option'); o.value=v;o.textContent=t; lb.appendChild(o); });
+      lb.value='12';
+    } else {
+      [['12','直近12カ月']].forEach(([v,t])=>{ const o=document.createElement('option'); o.value=v;o.textContent=t; lb.appendChild(o); });
+      lb.value='12';
+    }
+    loadSeries();
+  }
+
   function loadSeries(){
     const gran = document.getElementById('sel-granularity').value;
-    google.script.run.withSuccessHandler(drawSeries).getSeriesByProduct(gran);
+    const look = Number(document.getElementById('sel-lookback').value||0);
+    google.script.run.withSuccessHandler(drawSeries).getSeriesByProduct(gran, look);
   }
   function drawSeries(payload){
     if (!payload) return;
+
     const cols = [{label:'期間', type:'string'}].concat(payload.products.map(p=>({label:p,type:'number'})));
+
     const dt1 = new google.visualization.DataTable();
     cols.forEach(c=>dt1.addColumn(c.type, c.label));
     dt1.addRows(payload.counts);
@@ -300,15 +353,22 @@
     cols.forEach(c=>dt2.addColumn(c.type, c.label));
     dt2.addRows(payload.amounts);
 
+    const ttlSuffix = titleSuffix(payload.granularity, payload.lookback);
     const opt = {legend:{position:'top'}, chartArea:{left:60,top:40,right:20,bottom:60}, height:360, pointSize:3};
-    new google.visualization.LineChart(document.getElementById('chart-counts'))
-      .draw(dt1, Object.assign({}, opt, {title:'商品別 売上件数（'+labelGran(payload.granularity)+'）'}));
-    new google.visualization.LineChart(document.getElementById('chart-amounts'))
-      .draw(dt2, Object.assign({}, opt, {title:'商品別 売上金額（'+labelGran(payload.granularity)+'）', vAxis:{format:'¥#,###'}}));
-  }
-  function labelGran(g){ return g==='weekly'?'週別':(g==='monthly'?'月別':'日別'); }
 
-  // 時間帯別（2時間）
+    new google.visualization.LineChart(document.getElementById('chart-counts'))
+      .draw(dt1, Object.assign({}, opt, {title:`商品別 売上件数（${ttlSuffix}）`}));
+
+    new google.visualization.LineChart(document.getElementById('chart-amounts'))
+      .draw(dt2, Object.assign({}, opt, {title:`商品別 売上金額（${ttlSuffix}）`, vAxis:{format:'¥#,###'}}));
+  }
+  function titleSuffix(gran, look){
+    if (gran==='daily')   return (look==7?'直近7日':'直近30日');
+    if (gran==='weekly')  return (look==4?'直近4週間':'直近12週間');
+    return '直近12カ月'; // monthly
+  }
+
+  /* ---------- 時間帯別（1時間） ---------- */
   function loadTimeOfDay(){
     const r = document.getElementById('sel-range').value;
     const p = document.getElementById('sel-product').value;
@@ -316,24 +376,27 @@
   }
   function drawTimeOfDay(payload){
     if (!payload) return;
+
+    // 商品セレクタ初期化（初回のみ追加）
     const sel = document.getElementById('sel-product');
     if (sel.options.length <= 1) {
       payload.products.forEach(prod=>{
         const o=document.createElement('option'); o.value=prod; o.textContent=prod; sel.appendChild(o);
       });
     }
+
     const dt = new google.visualization.DataTable();
     dt.addColumn('string','時間帯');
     dt.addColumn('number','件数');
     dt.addRows(payload.data);
 
-    const title = `時間帯別（2h）売上件数：${payload.product||'すべて'} / ${labelRange(payload.rangeType)}`;
+    const title = `時間帯別（1h）売上件数：${payload.product||'すべて'} / ${labelRange(payload.rangeType)}`;
     const opt = {legend:'none', chartArea:{left:60,top:40,right:20,bottom:60}, height:320, hAxis:{slantedText:true, slantedTextAngle:45}};
     new google.visualization.ColumnChart(document.getElementById('chart-timeofday')).draw(dt, Object.assign({}, opt, {title}));
   }
   function labelRange(r){ return r==='weekly'?'週トータル':(r==='monthly'?'月トータル':'累計'); }
 
-  // 実行ログ
+  /* ---------- 実行ログ ---------- */
   let _logTimer = null;
   function refreshLogs(){
     const limit = Number(document.getElementById('sel-log-limit').value)||200;
