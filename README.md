@@ -55,7 +55,7 @@ https://docs.google.com/spreadsheets/d/xxxxxxxxxxxxxxxxxxxxxxxx/edit
 1. 発行された URL にアクセス  
 2. 「設定」タブを開く  
 - **SPREADSHEET_ID** に控えた ID を入力  
-- **MAX_SCAN_COUNT** に処理するメール件数（例: 200）を入力  
+- **MAX_SCAN_COUNT** に一度に処理するメール件数（例: 200）を入力  
 - 「保存」ボタンを押す  
 3. 「初期セットアップ」ボタンを押す  
 - Gmail・スプレッドシートへのアクセス権限が求められるので承認  
