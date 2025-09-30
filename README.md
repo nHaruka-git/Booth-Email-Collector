@@ -64,7 +64,7 @@ https://docs.google.com/spreadsheets/d/xxxxxxxxxxxxxxxxxxxxxxxx/edit
 ---
 
 ### 6. 定期実行（トリガー）
-1. 「定期抽出（5分）」トグルを ON にする  
+1. 「定期抽出（5/10/30/60分）」トグルを ON にする  
 2. Google Apps Script 側で 5分ごとのトリガーが自動で作成される  
 → BOOTH の売上メールを定期的に収集・スプレッドシートに記録  
 
@@ -76,7 +76,7 @@ https://docs.google.com/spreadsheets/d/xxxxxxxxxxxxxxxxxxxxxxxx/edit
 - **SPREADSHEET_ID** 入力欄
 - **MAX_SCAN_COUNT** 入力欄
 - **初期セットアップ** ボタン
-- **定期抽出（5分）ON/OFF** トグル
+- **定期抽出（5/10/30/60分）ON/OFF** トグル
 
 ### 分析ページ
 - **商品別売上件数折れ線グラフ**（日別/週別/月別切替）
