@@ -662,12 +662,24 @@ function getOrCreateLabel(labelName) {
 
 // ===== 🔧 管理機能 =====
 
+function getTriggerFrequency_() {
+  const sp = PropertiesService.getScriptProperties();
+  const v = Number(sp.getProperty('TRIGGER_FREQUENCY_MIN'));
+  return [5,10,30,60].includes(v) ? v : 5;
+}
+function setTriggerFrequency_(min) {
+  const v = Number(min);
+  const m = [5,10,30,60].includes(v) ? v : 5;
+  PropertiesService.getScriptProperties().setProperty('TRIGGER_FREQUENCY_MIN', String(m));
+  return m;
+}
+
 /** セットアップ後のみ実体を希望に同期し、最終状態(true=ON)を返す */
-function setupTriggers(wantOn) {
+function setupTriggers(wantOn, minutes) {
   const sp = PropertiesService.getScriptProperties();
   const setupDone = sp.getProperty('SETUP_DONE') === '1';
   if (!setupDone) {
-    // 前: 実体は作らない。常にOFF。
+    // 実体は常にOFF
     ScriptApp.getProjectTriggers().forEach(t=>{
       if (t.getHandlerFunction && t.getHandlerFunction() === 'processBOOTHSalesEmails') {
         ScriptApp.deleteTrigger(t);
@@ -676,10 +688,10 @@ function setupTriggers(wantOn) {
     addLogFromServer && addLogFromServer('INFO','未セットアップのためトリガー未作成',{wantOn:!!wantOn});
     return false;
   }
-  const state = triggerSync_(!!wantOn);
-  addLogFromServer && addLogFromServer('INFO','トリガー同期',{desired:!!wantOn, actual:state});
-  return state;
+  const freq = [5,10,30,60].includes(Number(minutes)) ? Number(minutes) : getTriggerFrequency_();
+  return triggerSync_(!!wantOn, freq);
 }
+
 
 
 function _isTriggerOn_() {
@@ -688,15 +700,19 @@ function _isTriggerOn_() {
 }
 
 /** 実体トリガーを希望に同期し、最終状態を返す（唯一の作成/削除点） */
-function triggerSync_(wantOn) {
+function triggerSync_(wantOn, minutes) {
+  const freq = [5,10,30,60].includes(Number(minutes)) ? Number(minutes) : getTriggerFrequency_();
+
+  // 既存削除
   ScriptApp.getProjectTriggers().forEach(t=>{
     if (t.getHandlerFunction && t.getHandlerFunction() === 'processBOOTHSalesEmails') {
       ScriptApp.deleteTrigger(t);
     }
   });
+
   if (wantOn) {
-    ScriptApp.newTrigger('processBOOTHSalesEmails').timeBased().everyMinutes(5).create();
-    addLogFromServer && addLogFromServer('INFO','トリガー作成',{everyMinutes:5});
+    ScriptApp.newTrigger('processBOOTHSalesEmails').timeBased().everyMinutes(freq).create();
+    addLogFromServer && addLogFromServer('INFO','トリガー作成',{everyMinutes:freq});
   } else {
     addLogFromServer && addLogFromServer('INFO','トリガー未作成',{reason:'OFF'});
   }
@@ -719,7 +735,7 @@ function setTriggerEnabled(enabled) {
   sp.setProperty('TRIGGER_ENABLED', enabled ? '1' : '0');
   const setupDone = sp.getProperty('SETUP_DONE') === '1';
 
-  // セットアップ前は常に実体OFF（強制削除）
+  // 未セットアップは実体OFF
   if (!setupDone) {
     ScriptApp.getProjectTriggers().forEach(t=>{
       if (t.getHandlerFunction && t.getHandlerFunction() === 'processBOOTHSalesEmails') {
@@ -730,12 +746,23 @@ function setTriggerEnabled(enabled) {
     return false;
   }
 
-  // セットアップ後は希望に同期
-  const actual = triggerSync_(!!enabled);
-  addLogFromServer && addLogFromServer('INFO','トリガー更新',{desired:!!enabled, actual});
+  const actual = triggerSync_(!!enabled, getTriggerFrequency_());
+  addLogFromServer && addLogFromServer('INFO','トリガー更新',{desired:!!enabled, actual, freq:getTriggerFrequency_()});
   return actual;
 }
 
+function setTriggerFrequency(minutes) {
+  const freq = setTriggerFrequency_(minutes);
+  const sp = PropertiesService.getScriptProperties();
+  const setupDone = sp.getProperty('SETUP_DONE') === '1';
+  const enabled = sp.getProperty('TRIGGER_ENABLED') === '1';
+
+  if (setupDone && enabled) {
+    triggerSync_(true, freq); // 即再作成
+  }
+  addLogFromServer && addLogFromServer('INFO','頻度更新',{freq, applied:(setupDone && enabled)});
+  return { freq, enabled: setupDone ? _isTriggerOn_() : false, setupDone };
+}
 
 /**
  * 処理済みラベルをクリアする関数（再処理用）
@@ -1083,7 +1110,7 @@ function _setupCore_(caller) {
 
   // 3) Gmail疎通
   try {
-    GmailApp.search('from:noreply@booth.pm (subject:商品が購入されました OR subject:ご注文が確定しました)');
+    GmailApp.search('from:noreply@booth.pm (subject:商品が購入されました OR subject:ご注文が確定しました)', 0, 1);
     res.steps.push('✅ Gmail 検索テスト OK');
   } catch (e) {
     res.steps.push(`❌ Gmail 検索テスト失敗: ${String(e)}`);
@@ -1110,21 +1137,22 @@ function _setupCore_(caller) {
     addLogFromServer && addLogFromServer('ERROR','ラベル作成失敗',{error:String(e), caller});
     return res;
   }
-
-  // 6) セットアップ完了 → 強制ON（UI希望は無視してONに上書き）
+  // 6) セットアップ完了 → 強制ON（頻度は既存が無ければ5）
   try {
     const sp = PropertiesService.getScriptProperties();
-    sp.setProperty('SETUP_DONE','1');        // セットアップ完了フラグ
-    sp.setProperty('TRIGGER_ENABLED','1');   // 希望値もONに強制上書き
-    const actual = triggerSync_(true);       // 実体もONに同期
-    res.steps.push(`✅ トリガー強制ON`);
+    const minutes = Number(sp.getProperty(CFG_KEYS.FREQ)) || 5;
+    sp.setProperty(CFG_KEYS.SETUP,'1');
+    sp.setProperty(CFG_KEYS.TRIGGER,'1');
+    sp.setProperty(CFG_KEYS.FREQ, String(minutes));
+    const actual = _applyTrigger_(true, minutes); // ← 60は自動でeveryHours(1)
+    res.steps.push('✅ トリガー強制ON');
     res.trigger = actual;
   } catch (e) {
     res.steps.push(`⚠️ トリガー同期失敗: ${String(e)}`);
     addLogFromServer && addLogFromServer('WARN','トリガー同期失敗',{error:String(e), caller});
   }
-
-  // 7) 初回ワンショット収集（統計のみ反映）
+  
+  // 7) 初回ワンショット収集
   try {
     const once = processBOOTHSalesEmails();
     addLogFromServer && addLogFromServer(once && once.error ? 'ERROR' : 'INFO', '初回収集完了', {
@@ -1134,13 +1162,12 @@ function _setupCore_(caller) {
     addLogFromServer && addLogFromServer('ERROR','初回収集失敗',{error:String(e)});
   }
 
-  // 8) 表示メトリクス
+  // 8) 表示メトリクス（ページングで全件）
   let collectedRows = null, scannedThreads = null;
   try { collectedRows = Math.max(0, getOrCreateSheet().getLastRow() - 1); } catch(e){}
   try {
-    scannedThreads = GmailApp.search(
-      'from:noreply@booth.pm (subject:商品が購入されました OR subject:ご注文が確定しました)'
-    ).length;
+    const q = 'from:noreply@booth.pm (subject:商品が購入されました OR subject:ご注文が確定しました)';
+    scannedThreads = countAllThreads_(q);
   } catch(e){}
 
   res.stats = { collectedRows, scannedThreads };
@@ -1149,6 +1176,20 @@ function _setupCore_(caller) {
   return res;
 }
 
+
 function initialSetup() {
   return _setupCore_('initialSetup');
+}
+
+function countAllThreads_(query) {
+  let total = 0;
+  const pageSize = 500;
+  // 安全ガード（最大10万件相当）
+  for (let start = 0, pages = 0; pages < 200; start += pageSize, pages++) {
+    const batch = GmailApp.search(query, start, pageSize);
+    if (!batch.length) break;
+    total += batch.length;
+    if (batch.length < pageSize) break;
+  }
+  return total;
 }
