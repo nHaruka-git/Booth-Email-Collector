@@ -398,7 +398,7 @@
   }
   function labelRange(r){ return r==='weekly'?'週トータル':(r==='monthly'?'月トータル':'累計'); }
 
-  /* ---------- 曜日別（追加機能） ---------- */
+  /* ---------- 曜日別（0始まり対応） ---------- */
   function loadDayOfWeek(){
     const r = document.getElementById('sel-range').value;
     const p = document.getElementById('sel-product').value;
@@ -407,16 +407,28 @@
   function drawDayOfWeek(payload){
     if (!payload) return;
 
+    // GASからは [日, 月, 火...] (0=Sun) で来る想定だが
+    // 0始まり＝月曜始まりとして表示するために順序を入れ替える
+    // payload.data[0] は日曜日。これを最後に移動させる。
+    let sortedData = [];
+    if (payload.data && payload.data.length === 7) {
+      // [日, 月, 火, 水, 木, 金, 土] -> [月, 火, 水, 木, 金, 土, 日]
+      sortedData = [...payload.data.slice(1), payload.data[0]];
+    } else {
+      sortedData = payload.data;
+    }
+
     const dt = new google.visualization.DataTable();
     dt.addColumn('string', '曜日');
     dt.addColumn('number', '件数');
-    dt.addRows(payload.data);
+    dt.addRows(sortedData);
 
     const title = `曜日別 売上件数：${payload.product||'すべて'} / ${labelRange(payload.rangeType)}`;
     const opt = {
       legend: 'none',
       chartArea: {left:60, top:40, right:20, bottom:60},
-      height: 320
+      height: 320,
+      vAxis: { minValue: 0, format: '#' } // Y軸を0から開始＆整数表示
     };
 
     new google.visualization.ColumnChart(document.getElementById('chart-dayofweek'))
