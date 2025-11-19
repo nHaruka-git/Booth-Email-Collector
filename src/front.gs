@@ -348,3 +348,27 @@ function getTimeOfDayByProduct(rangeType, product) {
   const products = [...new Set(all.map(r=>r.product))];
   return { product, rangeType, data, labels, products };
 }
+
+/** 商品ごと曜日別件数: 週/月/累計 */
+function getDayOfWeekByProduct(rangeType, product) {
+  const all = _readRows_();
+  const rows = all.filter(r => !product || r.product === product);
+  const now = new Date();
+  const from =
+    (rangeType === 'weekly')  ? new Date(now.getFullYear(), now.getMonth(), now.getDate()-6) :
+    (rangeType === 'monthly') ? new Date(now.getFullYear(), now.getMonth(), 1) :
+                                new Date(2000,0,1);
+
+  // 0=日, 1=月 ... 6=土
+  const buckets = Array.from({length:7}, ()=>0);
+
+  rows.forEach(r => {
+    if (r.date < from) return;
+    buckets[r.date.getDay()] += 1;
+  });
+
+  const labels = ['日', '月', '火', '水', '木', '金', '土'];
+  const data = labels.map((lab, i) => [lab, buckets[i]]);
+  
+  return { product, rangeType, data };
+}
