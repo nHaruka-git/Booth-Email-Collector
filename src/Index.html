@@ -37,7 +37,6 @@
 <body>
   <h1>BOOTH 売上ダッシュボード</h1>
 
-  <!-- 常時表示メトリクス -->
   <div class="stats">
     <div class="badge">
       <div class="badge-label">スキャン件数</div>
@@ -55,7 +54,6 @@
     <div id="tab-analytics" class="tab" onclick="showTab('analytics')">分析</div>
   </div>
 
-  <!-- 設定ページ -->
   <div id="page-settings">
     <div class="card">
       <div class="row">
@@ -100,7 +98,6 @@
 
       <div class="divider"></div>
 
-      <!-- 実行ログパネル -->
       <div class="row">
         <div class="col inline">
           <h3>実行ログ</h3>
@@ -122,7 +119,6 @@
     </div>
   </div>
 
-  <!-- 分析ページ -->
   <div id="page-analytics" style="display:none">
     <div class="card">
       <div class="row">
@@ -135,8 +131,7 @@
           </select>
           <label style="margin-left:8px">表示範囲</label>
           <select id="sel-lookback" onchange="loadSeries()">
-            <!-- オプションは集計単位に応じて動的に差し替え -->
-          </select>
+            </select>
         </div>
         <div class="col right muted">A:E = [日時, 注文番号, 商品名, 版, 金額]</div>
       </div>
@@ -147,8 +142,8 @@
     <div class="card">
       <div class="row">
         <div class="col inline">
-          <label>時間帯別（1時間ごと）</label>
-          <select id="sel-range" onchange="loadTimeOfDay()">
+          <label>時間帯・曜日分析</label>
+          <select id="sel-range" onchange="refreshDistributions()">
             <option value="weekly">週トータル</option>
             <option value="monthly">月トータル</option>
             <option value="all">累計</option>
@@ -156,12 +151,13 @@
         </div>
         <div class="col inline">
           <label>商品</label>
-          <select id="sel-product" onchange="loadTimeOfDay()">
+          <select id="sel-product" onchange="refreshDistributions()">
             <option value="">すべて</option>
           </select>
         </div>
       </div>
       <div id="chart-timeofday" class="bar"></div>
+      <div id="chart-dayofweek" class="bar" style="border-top:1px dashed #ddd; margin-top:20px; padding-top:20px;"></div>
     </div>
   </div>
 
@@ -174,7 +170,7 @@
     document.getElementById('tab-analytics').classList.toggle('active', name==='analytics');
     document.getElementById('page-settings').style.display = (name==='settings')?'block':'none';
     document.getElementById('page-analytics').style.display = (name==='analytics')?'block':'none';
-    if (name==='analytics') { loadSeries(); loadTimeOfDay(); }
+    if (name==='analytics') { loadSeries(); refreshDistributions(); }
   }
   function enableSetupButton(spreadsheetId){
     const on = !!(spreadsheetId && String(spreadsheetId).trim());
@@ -368,6 +364,12 @@
     return '直近12カ月'; // monthly
   }
 
+  /* ---------- 時間帯別・曜日別（統合管理） ---------- */
+  function refreshDistributions() {
+    loadTimeOfDay();
+    loadDayOfWeek();
+  }
+
   /* ---------- 時間帯別（1時間） ---------- */
   function loadTimeOfDay(){
     const r = document.getElementById('sel-range').value;
@@ -395,6 +397,31 @@
     new google.visualization.ColumnChart(document.getElementById('chart-timeofday')).draw(dt, Object.assign({}, opt, {title}));
   }
   function labelRange(r){ return r==='weekly'?'週トータル':(r==='monthly'?'月トータル':'累計'); }
+
+  /* ---------- 曜日別（追加機能） ---------- */
+  function loadDayOfWeek(){
+    const r = document.getElementById('sel-range').value;
+    const p = document.getElementById('sel-product').value;
+    google.script.run.withSuccessHandler(drawDayOfWeek).getDayOfWeekByProduct(r, p);
+  }
+  function drawDayOfWeek(payload){
+    if (!payload) return;
+
+    const dt = new google.visualization.DataTable();
+    dt.addColumn('string', '曜日');
+    dt.addColumn('number', '件数');
+    dt.addRows(payload.data);
+
+    const title = `曜日別 売上件数：${payload.product||'すべて'} / ${labelRange(payload.rangeType)}`;
+    const opt = {
+      legend: 'none',
+      chartArea: {left:60, top:40, right:20, bottom:60},
+      height: 320
+    };
+
+    new google.visualization.ColumnChart(document.getElementById('chart-dayofweek'))
+      .draw(dt, Object.assign({}, opt, {title}));
+  }
 
   /* ---------- 実行ログ ---------- */
   let _logTimer = null;
